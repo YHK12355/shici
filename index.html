@@ -763,6 +763,17 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
 .switch input:checked + i{background:var(--sage)}
 .switch input:checked + i::after{transform:translateX(18px)}
 .switch input:focus-visible + i{outline:2px solid var(--accent);outline-offset:2px}
+.accent-control{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.accent-control select{
+  padding:7px 10px;border:1px solid var(--line);border-radius:10px;
+  background:var(--paper);color:var(--ink);font-size:12px;outline:0;
+}
+.accent-control .text-btn{font-size:11px}
+.accent-chip{
+  display:inline-flex;align-items:center;
+  padding:2px 6px;border:1px solid var(--line-strong);border-radius:999px;
+  font-size:9px;color:var(--muted);letter-spacing:.06em;line-height:1.4;
+}
 .version{text-align:center;font-size:10px;color:var(--faint);letter-spacing:.06em;margin-top:22px}
 .confirm-modal{width:min(420px,100%);text-align:center;padding-top:34px}
 .confirm-modal h3{font-family:var(--font-display);font-size:23px;letter-spacing:.03em}
@@ -1258,6 +1269,17 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
       <label class="switch"><input type="checkbox" id="autoSpeak"><i></i></label>
     </div>
     <div class="setting-row">
+      <div><b>发音口音</b><span>雅思默认英音，其他默认美音</span></div>
+      <div class="accent-control">
+        <select id="accentSelect" aria-label="发音口音">
+          <option value="auto">跟随词库</option>
+          <option value="uk">英式</option>
+          <option value="us">美式</option>
+        </select>
+        <button class="text-btn" id="testVoice" type="button">试听</button>
+      </div>
+    </div>
+    <div class="setting-row">
       <div><b>深色模式</b><span>夜里看，眼睛舒服一点</span></div>
       <label class="switch"><input type="checkbox" id="darkMode"><i></i></label>
     </div>
@@ -1394,6 +1416,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
       goal: 10,
       mode: "recognition",
       order: "chapter",
+      accent: "auto",
       autoSpeak: false,
       theme: "auto",
       srs: {},
@@ -1409,6 +1432,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
     if (GOAL_OPTIONS.includes(Number(input.goal))) next.goal = Number(input.goal);
     if (Object.prototype.hasOwnProperty.call(MODE_META, input.mode)) next.mode = input.mode;
     if (Object.prototype.hasOwnProperty.call(ORDER_META, input.order)) next.order = input.order;
+    if (["auto", "uk", "us"].includes(input.accent)) next.accent = input.accent;
     next.autoSpeak = Boolean(input.autoSpeak);
     if (["auto", "light", "dark"].includes(input.theme)) next.theme = input.theme;
 
@@ -1657,6 +1681,9 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
 
   /* ---------------- speech ---------------- */
   let voices = [];
+  let currentAudio = null;
+  let audioFallbackTimer = null;
+
   function loadVoices() {
     try {
       voices = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
@@ -1669,23 +1696,82 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
     window.speechSynthesis.onvoiceschanged = loadVoices;
   }
 
-  function speak(text) {
+  function currentAccent() {
+    if (state.accent === "uk" || state.accent === "us") return state.accent;
+    const deck = currentDeck();
+    return deck && deck.id === "ielts" ? "uk" : "us";
+  }
+
+  function accentLabel() {
+    return currentAccent() === "uk" ? "英音" : "美音";
+  }
+
+  function pickVoice(accent) {
+    loadVoices();
+    const prefix = accent === "uk" ? "en-gb" : "en-us";
+    const preferred = accent === "uk"
+      ? /daniel|kate|serena|arthur|libby|oliver|google uk english|uk english/i
+      : /samantha|alex|ava|allison|aaron|nicky|google us english|us english/i;
+    const sameLang = voices.filter(v => String(v.lang || "").toLowerCase().replace("_", "-").startsWith(prefix));
+    return sameLang.find(v => preferred.test(v.name)) || sameLang[0] || voices.find(v => /^en/i.test(v.lang)) || null;
+  }
+
+  function stopSpeaking() {
+    clearTimeout(audioFallbackTimer);
+    if (currentAudio) {
+      try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (error) {}
+      currentAudio = null;
+    }
+    try { if ("speechSynthesis" in window) window.speechSynthesis.cancel(); } catch (error) {}
+  }
+
+  function speakLocal(text, accent) {
     if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
-      toast("这个浏览器不支持语音朗读");
+      toast("发音加载失败，请检查网络或浏览器语音");
       return;
     }
     try {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = "en-US";
+      utterance.lang = accent === "uk" ? "en-GB" : "en-US";
       utterance.rate = 0.86;
       utterance.pitch = 1;
-      const preferred = voices.find(v => /^en-US/i.test(v.lang) && /samantha|ava|allison|google us english|alex/i.test(v.name));
-      const english = preferred || voices.find(v => /^en/i.test(v.lang));
-      if (english) utterance.voice = english;
+      const voice = pickVoice(accent);
+      if (voice) utterance.voice = voice;
+      utterance.onerror = () => toast("发音加载失败，请检查网络或浏览器语音");
       window.speechSynthesis.speak(utterance);
     } catch (error) {
-      toast("朗读暂时不可用");
+      toast("发音加载失败，请检查网络或浏览器语音");
+    }
+  }
+
+  function speak(text) {
+    if (!text) return;
+    const accent = currentAccent();
+    const type = accent === "uk" ? 1 : 2;
+    const url = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(text)}&type=${type}`;
+    stopSpeaking();
+    try {
+      const audio = new Audio(url);
+      currentAudio = audio;
+      let settled = false;
+      const fallback = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(audioFallbackTimer);
+        try { audio.pause(); } catch (error) {}
+        speakLocal(text, accent);
+      };
+      audio.addEventListener("playing", () => {
+        settled = true;
+        clearTimeout(audioFallbackTimer);
+      }, { once: true });
+      audio.addEventListener("error", fallback, { once: true });
+      audioFallbackTimer = setTimeout(fallback, 1600);
+      const playback = audio.play();
+      if (playback && playback.catch) playback.catch(fallback);
+    } catch (error) {
+      speakLocal(text, accent);
     }
   }
 
@@ -2158,6 +2244,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
     const isRecall = mode === "recall";
     const tag = !entry ? "新词" : entry.interval >= 21 ? "已掌握 · 巩固" : `复习 · 第 ${entry.reps + 1} 次`;
     const letters = word.w.replace(/[^a-zA-Z]/g, "").length;
+    const accentName = accentLabel();
     const wordCount = word.w.trim().split(/\s+/).length;
 
     let frontHTML = "";
@@ -2195,6 +2282,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
         <div class="phon">
           ${word.p ? `<span>/${escapeHtml(word.p)}/</span>` : `<span class="phon-empty">点一下听发音</span>`}
           <button class="speak" type="button" data-speak="${escapeHtml(word.w)}" aria-label="朗读 ${escapeHtml(word.w)}">${ICON.speaker}</button>
+          <span class="accent-chip">${accentName}</span>
         </div>
         <div class="flip-hint"><span>轻点卡片 · 翻面看释义</span></div>
       `;
@@ -2206,6 +2294,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
         <div>
           <span class="word-small ${mode === "recognition" ? "" : "recall-word"}">${escapeHtml(word.w)}</span>
           ${word.p ? `<span class="phon-small">/${escapeHtml(word.p)}/</span>` : ""}
+          <span class="accent-chip">${accentName}</span>
         </div>
         <button class="speak" type="button" data-speak="${escapeHtml(word.w)}" aria-label="朗读 ${escapeHtml(word.w)}">${ICON.speaker}</button>
       </div>
@@ -2457,7 +2546,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
         <h2 id="wmWord">${escapeHtml(word.w)}</h2>
         <button class="speak" type="button" data-speak="${escapeHtml(word.w)}" aria-label="朗读 ${escapeHtml(word.w)}">${ICON.speaker}</button>
       </div>
-      <div class="wm-phon">${word.p ? `<span>/${escapeHtml(word.p)}/</span>` : ""}${word.pos ? `<span class="pos">${escapeHtml(word.pos)}</span>` : ""}</div>
+      <div class="wm-phon">${word.p ? `<span>/${escapeHtml(word.p)}/</span>` : ""}${word.pos ? `<span class="pos">${escapeHtml(word.pos)}</span>` : ""}<span class="accent-chip">${accentLabel()}</span></div>
       <p class="wm-mean">${escapeHtml(word.m)}</p>
       ${word.ex ? `<div class="example"><p>${escapeHtml(word.ex)}</p>${word.tr ? `<span>${escapeHtml(word.tr)}</span>` : ""}</div>` : ""}
       <div class="note-editor">
@@ -2723,6 +2812,8 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
       button.classList.toggle("is-active", Number(button.dataset.goal) === state.goal);
     });
     $("#autoSpeak").checked = state.autoSpeak;
+    const accentSelect = $("#accentSelect");
+    if (accentSelect) accentSelect.value = state.accent || "auto";
     $("#darkMode").checked = resolvedTheme() === "dark";
   }
 
@@ -2892,6 +2983,14 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
       save();
       toast(state.autoSpeak ? "卡片会自动发音" : "已关闭自动发音");
     });
+    $("#accentSelect").addEventListener("change", event => {
+      state.accent = event.target.value;
+      save();
+      const labels = { auto: "跟随词库：雅思英音，其他美音", uk: "已切换为英式发音", us: "已切换为美式发音" };
+      $(".accent-chip").forEach(chip => { chip.textContent = accentLabel(); });
+      toast(labels[state.accent] || "发音设置已更新");
+    });
+    $("#testVoice").addEventListener("click", () => speak("hello"));
     $("#darkMode").addEventListener("change", event => {
       state.theme = event.target.checked ? "dark" : "light";
       save();
