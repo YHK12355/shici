@@ -599,6 +599,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
 .setup-row{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:15px 0;border-top:1px dashed var(--line)}
 .setup-row:first-child{border-top:0;padding-top:0}
 .setup-row > span{font-size:13px;color:var(--muted);letter-spacing:.04em}
+.setup-row > .setup-deck{font-size:13px;font-weight:700;color:var(--ink)}
 .setup-row select{
   padding:8px 12px;border:1px solid var(--line);border-radius:10px;
   background:var(--paper);font-size:13px;max-width:260px;outline:0;
@@ -1128,7 +1129,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
         <div class="setup-card">
           <div class="setup-row">
             <span>词库</span>
-            <select id="quizDeck" aria-label="选择测验词库"></select>
+            <span class="setup-deck" id="quizDeckName"></span>
           </div>
           <div class="setup-row">
             <span>方向</span>
@@ -1295,8 +1296,18 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
+(function () {
+  var valid = ["cet4", "cet6", "kaoyan", "ielts"];
+  var deck = null;
+  try { deck = new URLSearchParams(location.search).get("deck"); } catch (error) {}
+  if (!valid.includes(deck)) {
+    try { deck = JSON.parse(localStorage.getItem("shici.v1") || "{}").deck; } catch (error) {}
+  }
+  if (!valid.includes(deck)) deck = "cet4";
+  window.__INITIAL_DECK = deck;
+  document.write('<script src="data/' + deck + '.js"><\/script>');
+})();
 </script>
-<script src="data.js"></script>
 <script>
 (() => {
   "use strict";
@@ -1348,17 +1359,30 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
   };
 
   /* ---------------- data ---------------- */
-  const DECKS = DECKS_RAW.map(deck => ({
-    id: deck.id,
-    name: deck.name,
-    desc: deck.desc,
-    words: deck.words.map(([w, p, pos, m, ex, tr, chapter]) => ({
-      id: `${deck.id}:${w}`, deck: deck.id, w, p, pos, m, ex, tr, chapter: chapter || ""
-    })).filter(word => word.w.length > 1 && /^[a-zA-Z][a-zA-Z' -]*$/.test(word.w))
-  }));
-  const DECK_INDEX = new Map(DECKS.map(deck => [deck.id, deck]));
+  const DECK_MANIFEST = [{"id":"cet4","name":"四级核心","desc":"完整四级公开词表 · 按 100 词分篇","count":4542},{"id":"cet6","name":"六级核心","desc":"完整六级公开词表 · 按 100 词分篇","count":3991},{"id":"kaoyan","name":"考研核心","desc":"完整考研公开词表 · 按 100 词分篇","count":5044},{"id":"ielts","name":"雅思核心","desc":"完整雅思公开词表 · 按 22 个主题分篇","count":7295}];
+  const INITIAL_DECK_ID = window.__INITIAL_DECK || "cet4";
+  const DECK_IDS = new Set(DECK_MANIFEST.map(deck => deck.id));
+  const DECKS = [];
+  const DECK_INDEX = new Map();
   const WORD_INDEX = new Map();
-  DECKS.forEach(deck => deck.words.forEach(word => WORD_INDEX.set(word.id, word)));
+
+  const isKnownWordId = id => DECK_IDS.has(String(id).split(":")[0]);
+
+  function hydrateDeck(raw) {
+    if (!raw || !DECK_IDS.has(raw.id) || DECK_INDEX.has(raw.id)) return;
+    const deck = {
+      id: raw.id,
+      name: raw.name,
+      desc: raw.desc,
+      words: raw.words.map(([w, p, pos, m, ex, tr, chapter]) => ({
+        id: `${raw.id}:${w}`, deck: raw.id, w, p, pos, m, ex, tr, chapter: chapter || ""
+      })).filter(word => word.w.length > 1 && /^[a-zA-Z][a-zA-Z' -]*$/.test(word.w))
+    };
+    DECKS.push(deck);
+    DECK_INDEX.set(deck.id, deck);
+    deck.words.forEach(word => WORD_INDEX.set(word.id, word));
+  }
+  hydrateDeck(window.__SHICI_DECK);
 
   /* ---------------- storage ---------------- */
   let storageOK = true;
@@ -1366,7 +1390,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
   function freshState() {
     return {
       v: 1,
-      deck: "cet4",
+      deck: INITIAL_DECK_ID,
       goal: 10,
       mode: "recognition",
       order: "chapter",
@@ -1381,7 +1405,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
   function sanitizeState(input, base) {
     const next = { ...base };
     if (!input || typeof input !== "object") return next;
-    if (DECK_INDEX.has(input.deck)) next.deck = input.deck;
+    if (DECK_IDS.has(input.deck)) next.deck = input.deck;
     if (GOAL_OPTIONS.includes(Number(input.goal))) next.goal = Number(input.goal);
     if (Object.prototype.hasOwnProperty.call(MODE_META, input.mode)) next.mode = input.mode;
     if (Object.prototype.hasOwnProperty.call(ORDER_META, input.order)) next.order = input.order;
@@ -1390,7 +1414,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
 
     if (input.notes && typeof input.notes === "object") {
       for (const [id, note] of Object.entries(input.notes)) {
-        if (!WORD_INDEX.has(id) || typeof note !== "string") continue;
+        if (!isKnownWordId(id) || typeof note !== "string") continue;
         const trimmed = note.trim().slice(0, 240);
         if (trimmed) next.notes[id] = trimmed;
       }
@@ -1398,7 +1422,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
 
     if (input.srs && typeof input.srs === "object") {
       for (const [id, entry] of Object.entries(input.srs)) {
-        if (!WORD_INDEX.has(id) || !entry || typeof entry !== "object") continue;
+        if (!isKnownWordId(id) || !entry || typeof entry !== "object") continue;
         next.srs[id] = {
           ease: clamp(Number(entry.ease) || 2.5, 1.3, 3),
           interval: Math.max(0, Number(entry.interval) || 0),
@@ -1414,7 +1438,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
       for (const [key, day] of Object.entries(input.days)) {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(key) || !day || typeof day !== "object") continue;
         const seen = Array.isArray(day.seen)
-          ? [...new Set(day.seen.filter(id => WORD_INDEX.has(id)))]
+          ? [...new Set(day.seen.filter(id => isKnownWordId(id)))]
           : [];
         const total = Math.max(0, Number(day.total) || 0);
         next.days[key] = {
@@ -1467,6 +1491,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
 
   /* ---------------- state ---------------- */
   let state = loadState();
+  if (DECK_IDS.has(INITIAL_DECK_ID)) state.deck = INITIAL_DECK_ID;
   let session = null;
   let lastSessionChapter = null;
   let quiz = null;
@@ -1507,6 +1532,19 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
       if (entry.due <= today) due++;
     }
     return { fresh, learning, mastered, due, learned, total: deck.words.length };
+  }
+
+  function metaStats(item) {
+    const prefix = `${item.id}:`;
+    const today = dateKey();
+    let learned = 0, due = 0, mastered = 0;
+    for (const [id, entry] of Object.entries(state.srs)) {
+      if (!id.startsWith(prefix)) continue;
+      learned++;
+      if (entry.due <= today) due++;
+      if (entry.interval >= 21) mastered++;
+    }
+    return { learned, due, mastered, total: item.count };
   }
 
   function dueWords(deck, words = deck.words) {
@@ -1810,7 +1848,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
     }
 
     const list = $("#todayWords");
-    const seen = day ? [...day.seen].slice(-6).reverse() : [];
+    const seen = day ? day.seen.filter(id => WORD_INDEX.has(id)).slice(-6).reverse() : [];
     if (seen.length) {
       $("#todayCount").textContent = `已学 ${day.n} 个`;
       list.innerHTML = seen.map(id => {
@@ -1873,13 +1911,13 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
 
   function renderLibrary() {
     const deck = currentDeck();
-    const totalWords = DECKS.reduce((sum, item) => sum + item.words.length, 0);
-    $("#libraryLede").textContent = `${DECKS.length} 个词库，${totalWords.toLocaleString("zh-CN")} 个词。慢慢来，比较快。`;
-    $("#deckChips").innerHTML = DECKS.map(item => {
-      const stats = deckStats(item);
+    const totalWords = DECK_MANIFEST.reduce((sum, item) => sum + item.count, 0);
+    $("#libraryLede").textContent = `${DECK_MANIFEST.length} 个词库，${totalWords.toLocaleString("zh-CN")} 个词。慢慢来，比较快。`;
+    $("#deckChips").innerHTML = DECK_MANIFEST.map(item => {
+      const stats = item.id === deck.id ? deckStats(deck) : metaStats(item);
       return `<button class="deck-tab ${item.id === deck.id ? "is-active" : ""}" type="button" data-deck="${item.id}">
         <b>${escapeHtml(item.name)}</b>
-        <span>${item.words.length.toLocaleString("zh-CN")} 词 · 已学 ${stats.learned}</span>
+        <span>${item.count.toLocaleString("zh-CN")} 词 · 已学 ${stats.learned}</span>
       </button>`;
     }).join("");
 
@@ -2473,10 +2511,8 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
 
   /* ---------------- quiz ---------------- */
   function initQuizSetup() {
-    const select = $("#quizDeck");
-    if (!select.options.length) {
-      select.innerHTML = DECKS.map(deck => `<option value="${deck.id}">${escapeHtml(deck.name)}</option>`).join("");
-    }
+    const name = $("#quizDeckName");
+    if (name) name.textContent = currentDeck().name;
   }
 
   function buildQuizQuestions(deck, count, direction) {
@@ -2509,8 +2545,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
 
   function startQuiz() {
     clearTimeout(quizTimer);
-    const deckId = $("#quizDeck").value;
-    const deck = DECK_INDEX.get(deckId) || currentDeck();
+    const deck = currentDeck();
     const questions = buildQuizQuestions(deck, quizCount, quizDir);
     if (!questions.length) { toast("单词不够，先学几个再来"); return; }
     quiz = {
@@ -2521,7 +2556,7 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
       done: false,
       answered: false,
       dir: quizDir,
-      deck: deckId
+      deck: deck.id
     };
     $("#quizSetup").hidden = true;
     $("#quizResult").hidden = true;
@@ -2670,6 +2705,10 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
       state = sanitizeState(parsed, freshState());
       applyTheme();
       saveNow();
+      if (state.deck !== INITIAL_DECK_ID) {
+        location.href = `${location.pathname}?deck=${encodeURIComponent(state.deck)}`;
+        return;
+      }
       renderAll();
       showView("today");
       toast("进度已导入");
@@ -2699,8 +2738,6 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
     renderLibrary();
     renderStats();
     initQuizSetup();
-    const quizSelect = $("#quizDeck");
-    if (quizSelect) quizSelect.value = state.deck;
   }
 
   /* ---------------- bind events ---------------- */
@@ -2768,16 +2805,11 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
     $("#deckChips").addEventListener("click", event => {
       const button = event.target.closest("[data-deck]");
       if (!button) return;
-      state.deck = button.dataset.deck;
-      libChapter = "all";
-      libLimit = 100;
-      libRandomOrder = null;
-      libRandomDeck = null;
-      save();
-      renderToday();
-      renderLibrary();
-      renderStats();
-      $("#quizDeck").value = state.deck;
+      const deckId = button.dataset.deck;
+      if (deckId === state.deck) return;
+      state.deck = deckId;
+      saveNow();
+      location.href = `${location.pathname}?deck=${encodeURIComponent(deckId)}&view=library`;
     });
 
     $("#libSearch").addEventListener("input", event => {
@@ -2986,6 +3018,9 @@ main{width:100%;max-width:1080px;margin:0 auto;padding:34px 24px 88px;flex:1}
   syncSettings();
   renderAll();
   showView("today");
+  try {
+    if (new URLSearchParams(location.search).get("view") === "library") showView("library");
+  } catch (error) {}
   const bootScreen = $("#bootScreen");
   if (bootScreen) {
     bootScreen.classList.add("is-hidden");
